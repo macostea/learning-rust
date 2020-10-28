@@ -30,7 +30,7 @@ use crate::sendable::Sendable;
 use std::time::Instant;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use na::{Matrix4, Perspective3};
+use na::{Matrix4, Perspective3, Isometry3, Point3, Vector3};
 use std::f32::consts::PI;
 
 
@@ -304,7 +304,16 @@ fn main() {
             let x_offset = (current_time_loop * scale).cos() * 0.5;
             let y_offset = (current_time_loop * scale).sin() * 0.5;
 
-            let perspective: Matrix4<f32> = Perspective3::new((window.size().0 / window.size().1) as f32, PI / 2.0, 0.5, 3.0).into_inner();
+            let eye = Point3::new(-1.0, 0.0, 2.0);
+            let target = Point3::new(0.0, 0.0, 0.0);
+
+            let model = Isometry3::new(na::zero(), na::zero());
+            let projection = Perspective3::new(16.0/9.0, PI / 2.0, 0.5, 10.0);
+            let view = Isometry3::look_at_rh(&eye, &target, &Vector3::y());
+
+            let model_view = view * model;
+            let mat_model_view = model_view.to_homogeneous();
+
             let vulkan_inverted: Matrix4<f32> = Matrix4::new(
                 1.0, 0.0, 0.0, 0.0,
                 0.0, -1.0, 0.0, 0.0,
@@ -314,7 +323,7 @@ fn main() {
 
             let uniform_data = shaders::vs::ty::Data {
                 offset: [x_offset, y_offset],
-                perspectiveMatrix: (vulkan_inverted).into(),
+                perspectiveMatrix: (vulkan_inverted * projection.as_matrix() * mat_model_view).into(),
             };
 
             uniform_buffer.next(uniform_data).unwrap()
