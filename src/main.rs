@@ -3,6 +3,7 @@ extern crate vulkano;
 extern crate vulkano_shaders;
 extern crate nalgebra as na;
 extern crate num_traits;
+extern crate obj;
 
 mod shaders;
 mod sendable;
@@ -32,6 +33,11 @@ use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use na::{Matrix4, Perspective3, Isometry3, Point3, Vector3};
 use std::f32::consts::PI;
+
+use std::fs::File;
+use std::io::BufReader;
+use obj::{load_obj, Obj};
+use vulkano::memory::DedicatedAlloc::Buffer;
 
 
 #[derive(Default, Copy, Clone)]
@@ -127,55 +133,67 @@ fn main() {
         ).unwrap()
     };
 
-    let vertex_data: Vec<Vertex> = Vec::from([
-        Vertex::new([0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0]),
-        Vertex::new([0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
-        Vertex::new([-0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    // let vertex_data: Vec<Vertex> = Vec::from([
+    //     Vertex::new([0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0]),
+    //     Vertex::new([0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    //
+    //     Vertex::new([0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0]),
+    //     Vertex::new([-0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    //
+    //     Vertex::new([0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    //
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    //     Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0]),
+    //
+    //     Vertex::new([-0.25,  0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0]),
+    //
+    //     Vertex::new([-0.25,  0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
+    //
+    //     Vertex::new([0.25,  0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0]),
+    //     Vertex::new([0.25, -0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
+    //
+    //     Vertex::new([0.25,  0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
+    //     Vertex::new([0.25,  0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
+    //
+    //     Vertex::new([0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //     Vertex::new([0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //
+    //     Vertex::new([0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //     Vertex::new([-0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
+    //
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
+    //     Vertex::new([0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
+    //
+    //     Vertex::new([0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
+    //     Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0])
+    // ]);
 
-        Vertex::new([0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0]),
-        Vertex::new([-0.25, -0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
-        Vertex::new([-0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0,]),
+    let input = BufReader::new(File::open("Handgun_obj.obj").unwrap());
+    let object: Obj = load_obj(input).unwrap();
 
-        Vertex::new([0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
-        Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
+    let vertex_data: Vec<Vertex> = object.vertices.iter().map(|v| {
+        Vertex {
+            position: [v.position[0], v.position[1], v.position[2], 1.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+        }
+    }).collect();
 
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
-        Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0,]),
-        Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.8, 0.8, 0.8, 1.0]),
-
-        Vertex::new([-0.25,  0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
-        Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
-        Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0]),
-
-        Vertex::new([-0.25,  0.25,  0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
-        Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
-        Vertex::new([-0.25,  0.25, -0.75, 1.0, 0.0, 1.0, 0.0, 1.0,]),
-
-        Vertex::new([0.25,  0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0]),
-        Vertex::new([0.25, -0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
-
-        Vertex::new([0.25,  0.25,  0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
-        Vertex::new([0.25,  0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.5, 0.5, 0.0, 1.0,]),
-
-        Vertex::new([0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-        Vertex::new([0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-        Vertex::new([-0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-
-        Vertex::new([0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-        Vertex::new([-0.25,  0.25,  0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-        Vertex::new([-0.25,  0.25, -0.75, 1.0, 1.0, 0.0, 0.0, 1.0,]),
-
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
-        Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
-        Vertex::new([0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
-
-        Vertex::new([0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
-        Vertex::new([-0.25, -0.25, -0.75, 1.0, 0.0, 1.0, 1.0, 1.0,]),
-        Vertex::new([-0.25, -0.25,  0.75, 1.0, 0.0, 1.0, 1.0, 1.0])
-    ]);
+    let index_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, object.indices.iter().cloned()).unwrap();
 
     let vs = shaders::vs::Shader::load(device.clone()).unwrap();
     let fs = shaders::fs::Shader::load(device.clone()).unwrap();
@@ -298,13 +316,12 @@ fn main() {
             let loop_duration: f32 = 5.0;
             let scale: f32 = std::f64::consts::PI as f32 * 2.0 / loop_duration;
 
-            let elapsed_time: f32 = start_time.elapsed().as_secs() as f32;
-            let current_time_loop = elapsed_time % loop_duration;
+            let elapsed_time: f32 = start_time.elapsed().as_secs_f32();
 
-            let x_offset = (current_time_loop * scale).cos() * 0.5;
-            let y_offset = (current_time_loop * scale).sin() * 0.5;
+            let x_offset = (elapsed_time * scale).cos() * 0.5;
+            let y_offset = (elapsed_time * scale).sin() * 0.5;
 
-            let eye = Point3::new(-1.0, 0.0, 2.0);
+            let eye = Point3::new(0.0 + x_offset * 5.0, 0.0 + y_offset * 2.0, 0.0 + y_offset * 5.0);
             let target = Point3::new(0.0, 0.0, 0.0);
 
             let model = Isometry3::new(na::zero(), na::zero());
@@ -341,12 +358,13 @@ fn main() {
         builder
             .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
             .unwrap()
-            .draw(
+            .draw_indexed(
                 pipeline.clone(),
                 &dynamic_state,
                 vertex_buffer.clone(),
+                index_buffer.clone(),
                 set.clone(),
-                (),
+                ()
             )
             .unwrap()
             .end_render_pass()
