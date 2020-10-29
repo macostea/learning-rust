@@ -3,18 +3,16 @@ extern crate vulkano;
 extern crate vulkano_shaders;
 extern crate nalgebra as na;
 extern crate num_traits;
+extern crate imgui;
 
 mod shaders;
 mod sendable;
+mod renderer;
 
-use vulkano::instance::{RawInstanceExtensions, Instance, PhysicalDevice};
-use std::ffi::CString;
-use vulkano::VulkanObject;
 use vulkano::swapchain;
-use vulkano::swapchain::{Surface, Swapchain, SurfaceTransform, PresentMode, FullscreenExclusive, ColorSpace, AcquireError, SwapchainCreationError};
+use vulkano::swapchain::{Swapchain, SurfaceTransform, PresentMode, FullscreenExclusive, ColorSpace, AcquireError, SwapchainCreationError};
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
-use vulkano::device::{Device, DeviceExtensions};
 use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage, CpuBufferPool};
 use std::sync::Arc;
 use vulkano::image::{ImageUsage, SwapchainImage};
@@ -32,6 +30,8 @@ use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use na::{Matrix4, Perspective3, Isometry3, Point3, Vector3};
 use std::f32::consts::PI;
+use imgui::{Context, Window, Condition, im_str, FontSource, FontConfig, TextureId, DrawCmd, DrawCmdParams};
+use crate::renderer::Renderer;
 
 
 #[derive(Default, Copy, Clone)]
@@ -61,47 +61,33 @@ fn main() {
         .build()
         .unwrap();
 
-    let instance_extensions = window.vulkan_instance_extensions().unwrap();
-    let raw_instance_extensions = RawInstanceExtensions::new(instance_extensions.iter().map(
-        |&v| CString::new(v).unwrap()
-    ));
-
-    let instance = Instance::new(None, raw_instance_extensions, None).unwrap();
-
-    let physical = PhysicalDevice::enumerate(&instance).next().expect("no device available");
+    let renderer = Renderer::init_vulkan(&window).expect("Could not init vulkan");
+    let (device, queue, surface) = (renderer.device.clone(), renderer.queue.clone(), renderer.surface.clone());
 
     println!(
         "Using device: {} (type{:?})",
-        physical.name(),
-        physical.ty()
+        device.physical_device().name(),
+        device.physical_device().ty()
     );
 
-    let surface_handle = window.vulkan_create_surface(instance.internal_object()).unwrap();
+    let mut imgui = Context::create();
+    imgui.set_ini_filename(None);
 
-    let window_context = Sendable::new(window.context());
+    imgui.io_mut().display_size = [window.size().0 as f32, window.size().1 as f32];
+    imgui.fonts().add_font(&[
+        FontSource::DefaultFontData {
+            config: Some(FontConfig {
+                size_pixels: 13.0,
+                ..FontConfig::default()
+            }),
+        },
+    ]);
 
-    let surface = Arc::new(unsafe {
-        Surface::from_raw_surface(instance.clone(), surface_handle, window_context)
-    });
-
-    let queue_family = physical.queue_families()
-        .find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false))
-        .expect("couldn't find a graphycal queue family");
-
-    let device_ext = DeviceExtensions {
-        khr_swapchain: true,
-        ..DeviceExtensions::none()
-    };
-
-    let (device, mut queues) = {
-        Device::new(physical, physical.supported_features(), &device_ext,
-                    [(queue_family, 0.5)].iter().cloned()).expect("failed to create device")
-    };
-
-    let queue = queues.next().unwrap();
+    imgui.io_mut().font_global_scale = 1.0;
+    let atlas_texture = imgui.fonts().build_rgba32_texture();
 
     let (mut swapchain, images) = {
-        let caps = surface.capabilities(physical).unwrap();
+        let caps = surface.capabilities(device.physical_device()).unwrap();
 
         let alpha = caps.supported_composite_alpha.iter().next().unwrap();
 
@@ -298,13 +284,13 @@ fn main() {
             let loop_duration: f32 = 5.0;
             let scale: f32 = std::f64::consts::PI as f32 * 2.0 / loop_duration;
 
-            let elapsed_time: f32 = start_time.elapsed().as_secs() as f32;
+            let elapsed_time: f32 = start_time.elapsed().as_secs_f32();
             let current_time_loop = elapsed_time % loop_duration;
 
             let x_offset = (current_time_loop * scale).cos() * 0.5;
             let y_offset = (current_time_loop * scale).sin() * 0.5;
 
-            let eye = Point3::new(-1.0, 0.0, 2.0);
+            let eye = Point3::new(0.0, 0.0, 2.0);
             let target = Point3::new(0.0, 0.0, 0.0);
 
             let model = Isometry3::new(na::zero(), na::zero());
@@ -338,7 +324,32 @@ fn main() {
                 .unwrap(),
         );
 
-        builder
+        let ui = imgui.frame();
+        Window::new(im_str!("Hello World"))
+            .size([300.0, 100.0], Condition::FirstUseEver)
+            .build(&ui, || {
+                ui.text(im_str!("Hello world.1"));
+                ui.text(im_str!("こんにちは世界！"));
+                ui.text(im_str!("This...is...imgui-rs!"));
+                ui.separator();
+                let mouse_pos = ui.io().mouse_pos;
+                ui.text(format!(
+                    "Mouse Position: ({:.1},{:.1})",
+                    mouse_pos[0], mouse_pos[1]
+                ));
+            });
+        let draw_data = ui.render();
+
+        // let vertex_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false,
+                                                           // vertex_data.iter().cloned()).unwrap();
+
+        let mut index_offset = 0;
+        let mut vertex_offset = 0;
+        let mut current_texture_id: Option<TextureId> = None;
+        let clip_offset = draw_data.display_pos;
+        let clip_scale = draw_data.framebuffer_scale;
+
+        let render_pass = builder
             .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
             .unwrap()
             .draw(
@@ -348,7 +359,78 @@ fn main() {
                 set.clone(),
                 (),
             )
-            .unwrap()
+            .unwrap();
+
+        let uniform_buffer_subbuffer = {
+            let vulkan_inverted: Matrix4<f32> = Matrix4::new(
+                1.0, 0.0, 0.0, 0.0,
+                0.0, -1.0, 0.0, 0.0,
+                0.0, 0.0, 0.5, 0.0,
+                0.0, 0.0, 0.5, 1.0,
+            );
+
+            let uniform_data = shaders::vs::ty::Data {
+                offset: [0.0, 0.0],
+                perspectiveMatrix: (vulkan_inverted).into(),
+            };
+
+            uniform_buffer.next(uniform_data).unwrap()
+        };
+
+        let imgui_set = Arc::new(
+            PersistentDescriptorSet::start(layout.clone())
+                .add_buffer(uniform_buffer_subbuffer)
+                .unwrap()
+                .build()
+                .unwrap(),
+        );
+
+        for draw_list in draw_data.draw_lists() {
+            for command in draw_list.commands() {
+                match command {
+                    DrawCmd::Elements {
+                        count,
+                        cmd_params:
+                        DrawCmdParams {
+                            clip_rect,
+                            texture_id,
+                            vtx_offset,
+                            idx_offset,
+                        },
+                    } => {
+                        // scissors
+                        if Some(texture_id) != current_texture_id {
+                            // texture
+                            current_texture_id = Some(texture_id);
+                        }
+
+                        // draw indexed
+                        let vtx_data = draw_list.vtx_buffer().iter().map(|v| {
+                            Vertex {
+                                position: [v.pos[0], v.pos[1], 0.0, 1.0],
+                                color: [1.0, 0.0, 0.0, 1.0]
+                            }
+                        });
+                        let imgui_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vtx_data).unwrap();
+                        let imgui_idx_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, draw_list.idx_buffer().iter().cloned()).unwrap();
+
+                        render_pass
+                            .draw_indexed(
+                                pipeline.clone(),
+                                &dynamic_state,
+                                imgui_buffer.clone(),
+                                imgui_idx_buffer.clone(),
+                                imgui_set.clone(),
+                                ()
+                            )
+                            .unwrap();
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        render_pass
             .end_render_pass()
             .unwrap();
 
