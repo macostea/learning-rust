@@ -13,9 +13,9 @@ use vulkano::swapchain;
 use vulkano::swapchain::{Swapchain, SurfaceTransform, PresentMode, FullscreenExclusive, ColorSpace, AcquireError, SwapchainCreationError};
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
-use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage, CpuBufferPool};
+use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage, CpuBufferPool, BufferAccess};
 use std::sync::Arc;
-use vulkano::image::{ImageUsage, SwapchainImage};
+use vulkano::image::{ImageUsage, SwapchainImage, ImmutableImage, Dimensions};
 use vulkano::sync;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::framebuffer::{Subpass, RenderPassAbstract, FramebufferAbstract, Framebuffer};
@@ -27,11 +27,13 @@ use std::rc::Rc;
 use crate::sendable::Sendable;
 use std::time::Instant;
 use vulkano::descriptor::PipelineLayoutAbstract;
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use na::{Matrix4, Perspective3, Isometry3, Point3, Vector3};
+use vulkano::descriptor::descriptor_set::{PersistentDescriptorSet, DescriptorSetsCollection};
+use na::{Matrix4, Perspective3, Isometry3, Point3, Vector3, Orthographic3};
 use std::f32::consts::PI;
 use imgui::{Context, Window, Condition, im_str, FontSource, FontConfig, TextureId, DrawCmd, DrawCmdParams};
 use crate::renderer::Renderer;
+use vulkano::format::Format;
+use vulkano::sampler::{Sampler, MipmapMode, Filter, SamplerAddressMode};
 
 
 #[derive(Default, Copy, Clone)]
@@ -50,6 +52,15 @@ impl Vertex {
 }
 
 vulkano::impl_vertex!(Vertex, position, color);
+
+#[derive(Default, Copy, Clone)]
+struct ImguiVertex {
+    position: [f32; 2],
+    UV: [f32; 2],
+    color: [u32; 4],
+}
+
+vulkano::impl_vertex!(ImguiVertex, position, UV, color);
 
 fn main() {
     let sdl_context = sdl2::init().unwrap();
@@ -84,34 +95,8 @@ fn main() {
     ]);
 
     imgui.io_mut().font_global_scale = 1.0;
-    let atlas_texture = imgui.fonts().build_rgba32_texture();
 
-    let (mut swapchain, images) = {
-        let caps = surface.capabilities(device.physical_device()).unwrap();
-
-        let alpha = caps.supported_composite_alpha.iter().next().unwrap();
-
-        let format = caps.supported_formats[0].0;
-
-        let dimensions: [u32; 2] = [window.size().0, window.size().1];
-
-        Swapchain::new(
-            device.clone(),
-            surface.clone(),
-            caps.min_image_count,
-            format,
-            dimensions,
-            1,
-            ImageUsage::color_attachment(),
-            &queue,
-            SurfaceTransform::Identity,
-            alpha,
-            PresentMode::Fifo,
-            FullscreenExclusive::Default,
-            true,
-            ColorSpace::SrgbNonLinear,
-        ).unwrap()
-    };
+    let (mut swapchain, images) = renderer.create_swapchain(&window);
 
     let vertex_data: Vec<Vertex> = Vec::from([
         Vertex::new([0.25,  0.25, 0.75, 1.0, 0.0, 0.0, 1.0, 1.0]),
@@ -166,23 +151,7 @@ fn main() {
     let vs = shaders::vs::Shader::load(device.clone()).unwrap();
     let fs = shaders::fs::Shader::load(device.clone()).unwrap();
 
-    let render_pass = Arc::new(
-        vulkano::single_pass_renderpass!(
-            device.clone(),
-            attachments: {
-                color: {
-                    load: Clear,
-                    store: Store,
-                    format: swapchain.format(),
-                    samples: 1,
-                }
-            },
-            pass: {
-                color: [color],
-                depth_stencil: {}
-            }
-        ).unwrap(),
-    );
+    let render_pass = renderer.create_renderpass(swapchain.clone());
 
     let pipeline = Arc::new(
         GraphicsPipeline::start()
@@ -194,6 +163,51 @@ fn main() {
             .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
             .cull_mode_back()
             .front_face_clockwise()
+            .build(device.clone())
+            .unwrap()
+    );
+
+    let imgui_vs = shaders::imgui_vs::Shader::load(device.clone()).unwrap();
+    let imgui_fs = shaders::imgui_fs::Shader::load(device.clone()).unwrap();
+
+    let (texture, tex_future) = {
+        let mut fonts = imgui.fonts();
+        let atlas_texture = fonts.build_rgba32_texture();
+
+        let dimensions = Dimensions::Dim2d {
+            width: atlas_texture.width,
+            height: atlas_texture.height,
+        };
+        ImmutableImage::from_iter(
+            atlas_texture.data.iter().cloned(),
+            dimensions,
+            Format::R8G8B8A8Unorm,
+            queue.clone()
+        ).unwrap()
+    };
+
+    let sampler = Sampler::new(
+        device.clone(),
+        Filter::Linear,
+        Filter::Linear,
+        MipmapMode::Nearest,
+        SamplerAddressMode::Repeat,
+        SamplerAddressMode::Repeat,
+        SamplerAddressMode::Repeat,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    ).unwrap();
+
+    let imgui_pipeline = Arc::new(
+        GraphicsPipeline::start()
+            .vertex_input_single_buffer()
+            .vertex_shader(imgui_vs.main_entry_point(), ())
+            .triangle_list()
+            .viewports_dynamic_scissors_irrelevant(1)
+            .fragment_shader(imgui_fs.main_entry_point(), ())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
             .build(device.clone())
             .unwrap()
     );
@@ -210,7 +224,7 @@ fn main() {
     let mut framebuffers = window_size_dependent_setup(&images[..], render_pass.clone(), &mut dynamic_state);
 
     let mut recreate_swapchain = false;
-    let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
+    let mut previous_frame_end = Some(tex_future.boxed());
 
     let mut event_pump = sdl_context.event_pump().unwrap();
 
@@ -218,6 +232,7 @@ fn main() {
                                                        vertex_data.iter().cloned()).unwrap();
 
     let uniform_buffer = CpuBufferPool::<shaders::vs::ty::Data>::new(device.clone(), BufferUsage::all());
+    let imgui_uniform_buffer = CpuBufferPool::<shaders::imgui_vs::ty::Matrices>::new(device.clone(), BufferUsage::all());
 
     let start_time = Instant::now();
 
@@ -273,7 +288,7 @@ fn main() {
             recreate_swapchain = true;
         }
 
-        let clear_values = vec![[0.0, 0.0, 0.0, 1.0].into()];
+        let clear_values = vec![[1.0, 1.0, 1.0, 1.0].into()];
 
         let mut builder = AutoCommandBufferBuilder::primary_one_time_submit(
             device.clone(),
@@ -340,14 +355,14 @@ fn main() {
             });
         let draw_data = ui.render();
 
-        // let vertex_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false,
-                                                           // vertex_data.iter().cloned()).unwrap();
-
         let mut index_offset = 0;
         let mut vertex_offset = 0;
         let mut current_texture_id: Option<TextureId> = None;
         let clip_offset = draw_data.display_pos;
         let clip_scale = draw_data.framebuffer_scale;
+
+        let framebuffer_width = draw_data.framebuffer_scale[0] * draw_data.display_size[0];
+        let framebuffer_height = draw_data.framebuffer_scale[1] * draw_data.display_size[1];
 
         let render_pass = builder
             .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
@@ -361,31 +376,34 @@ fn main() {
             )
             .unwrap();
 
-        let uniform_buffer_subbuffer = {
-            let vulkan_inverted: Matrix4<f32> = Matrix4::new(
-                1.0, 0.0, 0.0, 0.0,
-                0.0, -1.0, 0.0, 0.0,
-                0.0, 0.0, 0.5, 0.0,
-                0.0, 0.0, 0.5, 1.0,
-            );
-
-            let uniform_data = shaders::vs::ty::Data {
-                offset: [0.0, 0.0],
-                perspectiveMatrix: (vulkan_inverted).into(),
-            };
-
-            uniform_buffer.next(uniform_data).unwrap()
-        };
-
-        let imgui_set = Arc::new(
-            PersistentDescriptorSet::start(layout.clone())
-                .add_buffer(uniform_buffer_subbuffer)
-                .unwrap()
-                .build()
-                .unwrap(),
+        let vulkan_inverted: Matrix4<f32> = Matrix4::new(
+            1.0, 0.0, 0.0, 0.0,
+            0.0, -1.0, 0.0, 0.0,
+            0.0, 0.0, 0.5, 0.0,
+            0.0, 0.0, 0.5, 1.0,
         );
 
+        let ortho = Orthographic3::new(0.0, framebuffer_width, framebuffer_height, 0.0, -1.0, 1.0);
+
+        let imgui_push_constant = shaders::imgui_vs::ty::Matrices {
+            ortho: (vulkan_inverted * ortho.as_matrix()).into(),
+        };
+
+        let mut index_offset = 0;
+        let mut vertex_offset = 0;
+
+        let vertex_count = draw_data.total_vtx_count as usize;
+        let index_count = draw_data.total_idx_count as usize;
+        let mut vertices = Vec::with_capacity(vertex_count);
+        let mut indices = Vec::with_capacity(index_count);
+
         for draw_list in draw_data.draw_lists() {
+            vertices.extend_from_slice(draw_list.vtx_buffer());
+            indices.extend_from_slice(draw_list.idx_buffer());
+        }
+
+        for draw_list in draw_data.draw_lists() {
+            // draw indexed
             for command in draw_list.commands() {
                 match command {
                     DrawCmd::Elements {
@@ -400,30 +418,45 @@ fn main() {
                     } => {
                         // scissors
                         if Some(texture_id) != current_texture_id {
-                            // texture
+                            let vtx_data = vertices[vtx_offset..].iter().map(|v| {
+                                ImguiVertex {
+                                    position: v.pos,
+                                    UV: v.uv,
+                                    color: [v.col[0] as u32, v.col[1] as u32, v.col[2] as u32, v.col[3] as u32],
+                                }
+                            });
+
+                            let imgui_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vtx_data).unwrap();
+                            let imgui_idx_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, indices[idx_offset..idx_offset+count].iter().cloned()).unwrap();
+
+                            let layout = imgui_pipeline.layout().descriptor_set_layout(0).unwrap();
+                            let imgui_set = Arc::new(
+                                PersistentDescriptorSet::start(layout.clone())
+                                    .add_sampled_image(texture.clone(), sampler.clone())
+                                    .unwrap()
+                                    .build()
+                                    .unwrap(),
+                            );
+
+                            render_pass
+                                .draw_indexed(
+                                    imgui_pipeline.clone(),
+                                    &dynamic_state,
+                                    imgui_buffer.clone(),
+                                    imgui_idx_buffer.clone(),
+                                    imgui_set.clone(),
+                                    imgui_push_constant
+                                )
+                                .unwrap();
+
                             current_texture_id = Some(texture_id);
+
+
+
+
                         }
 
-                        // draw indexed
-                        let vtx_data = draw_list.vtx_buffer().iter().map(|v| {
-                            Vertex {
-                                position: [v.pos[0], v.pos[1], 0.0, 1.0],
-                                color: [1.0, 0.0, 0.0, 1.0]
-                            }
-                        });
-                        let imgui_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, vtx_data).unwrap();
-                        let imgui_idx_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, draw_list.idx_buffer().iter().cloned()).unwrap();
 
-                        render_pass
-                            .draw_indexed(
-                                pipeline.clone(),
-                                &dynamic_state,
-                                imgui_buffer.clone(),
-                                imgui_idx_buffer.clone(),
-                                imgui_set.clone(),
-                                ()
-                            )
-                            .unwrap();
                     },
                     _ => {}
                 }
